@@ -1,29 +1,62 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"tmp/highlighter"
 	hl "tmp/highlighter"
+	"tmp/parser"
+	"tmp/parser/hls"
 	"tmp/source"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/fatih/color"
-	"golang.org/x/net/webdav"
 )
+
+type ViewableFile struct {
+	File parser.NestedFile
+	Idx  int
+}
+
+func (f *ViewableFile) NestedLen() int {
+	if p, ok := f.File.(parser.Playlist); ok {
+		return len(p.NestedFiles())
+	}
+	return 0
+}
+
+func (f *ViewableFile) SelectNext() {
+	f.Idx = min(f.NestedLen()-1, f.Idx+1)
+}
+
+func (f *ViewableFile) SelectPrev() {
+	f.Idx = max(0, f.Idx-1)
+}
+
+func (f *ViewableFile) Selected() parser.NestedFile {
+	if p, ok := f.File.(parser.Playlist); ok {
+		return p.NestedFiles()[f.Idx]
+	}
+	return nil
+}
+
+func (f *ViewableFile) String() string {
+	if p, ok := f.File.(fmt.Stringer); ok {
+		return p.String()
+	}
+	return f.File.RelativeURL()
+}
 
 type PlaylistViewer struct {
 	selectedHighlighter highlighter.Highlighter
 	source              source.Source
 	masterURL           string
 
-	historyStack []string
-
-	currentPlaylistData string
-	selectedLineIdx     int
-	selectMax           int
+	historyStack []*ViewableFile
 }
 
 func NewPlaylistViewer(masterURL string) *PlaylistViewer {
@@ -41,20 +74,26 @@ func (pv *PlaylistViewer) Init() tea.Cmd {
 	green := color.New(color.FgGreen, color.Bold)
 	pv.selectedHighlighter = hl.Multi(
 		hl.NewColor(green),
-		hl.Pointer("->"),
+		// hl.Pointer("->"),
 	)
-
-	pv.selectedLineIdx = 0
-	pv.selectMax = 4
 	return nil
 }
 
 func (pv *PlaylistViewer) GoTo(ctx context.Context, url string) (err error) {
-	pv.currentPlaylistData, err = pv.source.GetFile(ctx, pv.masterURL)
+	data, err := pv.source.GetFile(ctx, url)
 	if err != nil {
 		return err
 	}
-	pv.historyStack = append(pv.historyStack, url)
+
+	var nextFile parser.NestedFile
+	nextFile, err = hls.NewPlaylist(url, strings.NewReader(data), false)
+	if err != nil {
+		nextFile = hls.NewNestedFile("", url)
+	}
+	pv.historyStack = append(pv.historyStack, &ViewableFile{
+		File: nextFile,
+		Idx:  0,
+	})
 	return nil
 }
 
@@ -63,12 +102,26 @@ func (pv *PlaylistViewer) GoPrev(ctx context.Context) (err error) {
 		return nil
 	}
 	pv.historyStack = pv.historyStack[:len(pv.historyStack)-1]
-	current := pv.historyStack[len(pv.historyStack)-1]
-	pv.currentPlaylistData, err = pv.source.GetFile(ctx, current)
-	if err != nil {
-		return err
+	return nil
+}
+
+func (pv *PlaylistViewer) GoNext(ctx context.Context) (err error) {
+	if selected := pv.Current().Selected(); selected != nil {
+		return pv.GoTo(ctx, selected.URL())
 	}
 	return nil
+}
+
+func (pv *PlaylistViewer) UpdateCurrent(ctx context.Context) (err error) {
+	if len(pv.historyStack) == 1 {
+		pv.historyStack = nil
+		return pv.GoTo(ctx, pv.masterURL)
+	}
+	return cmp.Or(pv.GoPrev(ctx), pv.GoNext(ctx))
+}
+
+func (pv *PlaylistViewer) Current() *ViewableFile {
+	return pv.historyStack[len(pv.historyStack)-1]
 }
 
 // Update is called when a message is received. Use it to inspect messages
@@ -80,38 +133,36 @@ func (pv *PlaylistViewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Is it a key press?
 	case tea.KeyMsg:
-
 		// Cool, what was the actual key pressed?
 		switch msg.String() {
-
-		// These keys should exit the program.
 		case "ctrl+c", "q":
 			return pv, tea.Quit
-
-		// The "up" and "k" keys move the cursor up
 		case "up", "k":
-			if pv.selectedLineIdx > 0 {
-				pv.selectedLineIdx--
+			if pv.Current().Idx > 0 {
+				pv.Current().SelectPrev()
+			} else {
+				// TODO: fix
+				// media, ok := pv.Current().File.(*hls.MediaPlaylist)
+				// if ok {
+				// 	u, _ := url.Parse(media.URL())
+				// 	query := u.Query()
+				// 	v := query.Get("timeshift")
+				// 	timeshift, _ := strconv.Atoi(v)
+				// 	timeshift += int(media.TargetDuration().Seconds())
+				// 	query.Set("timeshift", strconv.Itoa(timeshift))
+				// 	u.RawQuery = query.Encode()
+				// 	pv.GoPrev(ctx)
+				// 	pv.GoTo(ctx, u.String())
+				// }
 			}
-
-		// The "down" and "j" keys move the cursor down
 		case "down", "j":
-			if pv.selectedLineIdx < pv.selectMax {
-				pv.selectedLineIdx++
-			}
-
-		// The "enter" key and the spacebar (a literal space) toggle
-		// the selected state for the item that the cursor is pointing at.
+			pv.Current().SelectNext()
 		case "backspace", "ctrl+o":
 			pv.GoPrev(ctx)
+		case "u":
+			pv.UpdateCurrent(ctx)
 		case "enter", " ":
-			pv.GoTo(ctx)
-			// _, ok := m.selected[pv.selectedLineIdx]
-			// if ok {
-			// 	delete(m.selected, m.cursor)
-			// } else {
-			// 	m.selected[m.cursor] = struct{}{}
-			// }
+			pv.GoNext(ctx)
 		}
 	}
 
@@ -123,17 +174,30 @@ func (pv *PlaylistViewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View renders the program's UI, which is just a string. The view is
 // rendered after every Update.
 func (pv *PlaylistViewer) View() string {
+	selected := pv.Current().Selected()
+	currentContent := pv.Current().String()
+	if selected == nil {
+		return currentContent
+	}
 
-	strs := strings.Split(pv.currentPlaylistData, "\n")
+	strs := strings.Split(currentContent, "\n")
 
-	strs[pv.selectedLineIdx] = "->" + pv.selectedHighlighter.Highlight(strs[pv.selectedLineIdx])
+	idx := slices.IndexFunc(strs, func(str string) bool {
+		return strings.Contains(str, selected.RelativeURL())
+	})
+	strs[idx] = pv.selectedHighlighter.Highlight(strs[idx])
+
+	// strs = append([]string{pv.Current().File.URL()}, strs...)
+
 	return strings.Join(strs, "\n")
-	return pv.currentPlaylistData
 }
 
 func main() {
-	webdav.Condition
-	pv := NewPlaylistViewer("https://by-streampool-ext.spnode.net/10005/nodvr/hls/setplex_test/playlist.m3u8")
+	if len(os.Args) < 2 {
+		fmt.Println("where is link?")
+		return
+	}
+	pv := NewPlaylistViewer(os.Args[1])
 	if _, err := tea.NewProgram(pv, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Println("Error running program:", err)
 		os.Exit(1)
