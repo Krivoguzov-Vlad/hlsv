@@ -1,4 +1,4 @@
-module tmp
+module github.com/Krivoguzov-Vlad/hlsv
 
 go 1.22.0
 

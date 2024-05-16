@@ -7,11 +7,12 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"tmp/highlighter"
-	hl "tmp/highlighter"
-	"tmp/parser"
-	"tmp/parser/hls"
-	"tmp/source"
+
+	"github.com/Krivoguzov-Vlad/hlsv/highlighter"
+	hl "github.com/Krivoguzov-Vlad/hlsv/highlighter"
+	parser "github.com/Krivoguzov-Vlad/hlsv/parser"
+	"github.com/Krivoguzov-Vlad/hlsv/parser/hls"
+	source "github.com/Krivoguzov-Vlad/hlsv/source"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/fatih/color"

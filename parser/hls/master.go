@@ -5,7 +5,8 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
-	"tmp/parser"
+
+	"github.com/Krivoguzov-Vlad/hlsv/parser"
 
 	"github.com/bldsoft/m3u8"
 )

@@ -7,7 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"tmp/parser"
+
+	"github.com/Krivoguzov-Vlad/hlsv/parser"
 
 	"github.com/bldsoft/m3u8"
 )
